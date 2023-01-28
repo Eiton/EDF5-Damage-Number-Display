@@ -10,6 +10,7 @@
 #include <format>
 #include <stdexcept>
 #include <list>
+#include <map>
 
 //Mod loader
 #include <PluginAPI.h>
@@ -36,6 +37,11 @@
 
 #include <fnt.h>
 
+//mINI
+#include <ini.h>
+
+
+
 #define VMT_PRESENT (UINT)IDXGISwapChainVMT::Present
 
 
@@ -51,34 +57,137 @@ static WNDPROC OriginalWndProcHandler = nullptr;
 HWND window = nullptr;
 IDXGISwapChainPresent fnIDXGISwapChainPresent;
 
-//Constants
-constexpr auto DAMAGE_DISPLAY_TIME = 180;
-constexpr auto DAMAGE_CHANGE_TIME = 20;
-//These are scaled according to game resolution
-constexpr auto DAMAGE_NUMBER_FONT_SIZE = 32.0f;
-constexpr auto DAMAGE_NUMBER_POS_X = 1344.0f;
-constexpr auto DAMAGE_NUMBER_POS_Y = 896.0f;
-constexpr auto DAMAGE_NUMBER_VEHICLE_POS_X = 500.0f;
-constexpr auto DAMAGE_NUMBER_VEHICLE_POS_Y = 940.0f;
 
-struct Damage{
+int FIXED_POSITION_DISPLAY = 1;
+int FIXED_POSITION_DISPLAY_TIME = 180;
+int FIXED_POSITION_CHANGE_TIME = 20;
+float FIXED_POSITION_FONT_SIZE = 32.0f;
+float FIXED_POSITION_POS_X = 1344.0f;
+float FIXED_POSITION_POS_Y = 896.0f;
+float FIXED_POSITION_VEHICLE_FONT_SIZE = 48.0f;
+float FIXED_POSITION_VEHICLE_POS_X = 500.0f;
+float FIXED_POSITION_VEHICLE_POS_Y = 940.0f;
+
+int WORLD_POSITION_DISPLAY = 0;
+int WORLD_POSITION_DISPLAY_MODE = 0;
+int WORLD_POSITION_DISPLAY_TIME = 0;
+float WORLD_POSITION_FONT_SIZE = 32.0f;
+struct vec2
+{
+	float x;
+	float y;
+};
+
+struct vec3
+{
+	float x;
+	float y;
+	float z;
+};
+
+struct vec4
+{
+	float x;
+	float y;
+	float z;
+	float w;
+};
+
+struct Damage {
+	vec3 pos;
 	float value;
 	int time;
 };
+
 int gameTime = 0;
 uintptr_t baseAddress;
 float windowScale;
 int winWidth;
 int winHeight;
-std::list<Damage*> damageNumbers;
+std::list<Damage*> damageNumbersFixed;
+std::list<Damage*> damageNumbersByHit;
+std::map<uintptr_t,Damage*> damageNumbersByTarget;
 ImFont* defaultFont;
 
+float* viewMatrixT;
+float* projectionMatrixT;
+float viewProjectionMatrix[16];
 
+//void __fastcall AddDamage(float damage, uintptr_t ptr, uintptr_t target);
+
+uintptr_t GetPointerAddress(const uintptr_t base, std::initializer_list<int> offsets) {
+	uintptr_t out = base;
+	const int* it = offsets.begin();
+	for (int i = 0; i < offsets.size(); i++) {
+		out = *(uintptr_t*)(out + *(it + i));
+		if (out == 0) {
+			return 0;
+		}
+	}
+	return out;
+}
 extern "C" {
 	void __fastcall recordPlayerDamage();
+	void __fastcall add_damage(float dmg, uintptr_t ptr, uintptr_t target) {
+		if (FIXED_POSITION_DISPLAY != 0) {
+			if (damageNumbersFixed.size() > 0) {
+				Damage* lastDamage = damageNumbersFixed.back();
+				if (gameTime - lastDamage->time > FIXED_POSITION_CHANGE_TIME) {
+					Damage* d = new Damage();
+					d->value = -dmg;
+					d->time = gameTime;
+					damageNumbersFixed.push_back(d);
+				}
+				else {
+					lastDamage->value -= dmg;
+					lastDamage->time = gameTime;
+				}
+			}
+			else {
+				Damage* d = new Damage();
+				d->value = -dmg;
+				d->time = gameTime;
+				damageNumbersFixed.push_back(d);
+			}
+		}
+		if (WORLD_POSITION_DISPLAY != 0 && WORLD_POSITION_DISPLAY_MODE == 1) {
+			//Use the bullet position
+			Damage* d = new Damage();
+			d->value = -dmg;
+			d->time = gameTime;
+			d->pos.x = *(float*)(ptr + 0x30);
+			d->pos.y = *(float*)(ptr + 0x34);
+			d->pos.z = *(float*)(ptr + 0x38);
+			damageNumbersByHit.push_back(d);
+		}
+		else if (WORLD_POSITION_DISPLAY != 0 && WORLD_POSITION_DISPLAY_MODE == 2){
+			// Try to get the lock on position. 
+			uintptr_t pos = GetPointerAddress(target, { 0x268,0x8 });
+			// Some objects do not have lock on position, so use the object position instead
+			if (pos == 0) {
+				pos = target + 0x94;
+			}
+			if (damageNumbersByTarget.contains(target)) {
+				Damage* d = damageNumbersByTarget.find(target)->second;
+				d->value -= dmg;
+				d->time = gameTime;
+				d->pos.x = *(float*)(pos + 0x10);
+				d->pos.y = *(float*)(pos + 0x14);
+				d->pos.z = *(float*)(pos + 0x18);
+			}
+			else {
+				Damage* d = new Damage();
+				d->value = -dmg;
+				d->time = gameTime;
+				d->pos.x = *(float*)(pos + 0x10);
+				d->pos.y = *(float*)(pos + 0x14);
+				d->pos.z = *(float*)(pos + 0x18);
+				damageNumbersByTarget.insert(std::pair{ target,d });
+			}
+		}
+	}
 	uintptr_t playerAddress;
 	uintptr_t hookRetAddress;
-	float damage_tmp = 0;
 
 	BOOL __declspec(dllexport) EML4_Load(PluginInfo* pluginInfo) {
 		return false;
@@ -100,18 +209,68 @@ HRESULT GetDeviceAndCtxFromSwapchain(IDXGISwapChain *pSwapChain, ID3D11Device **
 
 	return ret;
 }
-uintptr_t GetPointerAddress(const uintptr_t base, std::initializer_list<int> offsets) {
-	uintptr_t out = base;
-	const int* it = offsets.begin();
-	for (int i = 0; i < offsets.size(); i++) {
-		out = *(uintptr_t*)(out+*(it+i));
-		if (out == 0) {
-			return 0;
-		}
+void GetViewProjectionMatrix() {
+	if (viewMatrixT != 0 && projectionMatrixT != 0) {
+		viewProjectionMatrix[0] = viewMatrixT[0] * projectionMatrixT[0];
+		viewProjectionMatrix[1] = viewMatrixT[1] * projectionMatrixT[0];
+		viewProjectionMatrix[2] = viewMatrixT[2] * projectionMatrixT[0];
+		viewProjectionMatrix[3] = viewMatrixT[3] * projectionMatrixT[0];
+		viewProjectionMatrix[4] = viewMatrixT[4] * projectionMatrixT[5];
+		viewProjectionMatrix[5] = viewMatrixT[5] * projectionMatrixT[5];
+		viewProjectionMatrix[6] = viewMatrixT[6] * projectionMatrixT[5];
+		viewProjectionMatrix[7] = viewMatrixT[7] * projectionMatrixT[5];
+		viewProjectionMatrix[8] = viewMatrixT[8] * projectionMatrixT[10];
+		viewProjectionMatrix[9] = viewMatrixT[9] * projectionMatrixT[10];
+		viewProjectionMatrix[10] = viewMatrixT[10] * projectionMatrixT[10];
+		viewProjectionMatrix[11] = viewMatrixT[11] * projectionMatrixT[10] + projectionMatrixT[11];
+		viewProjectionMatrix[12] = viewMatrixT[8] * projectionMatrixT[14];
+		viewProjectionMatrix[13] = viewMatrixT[9] * projectionMatrixT[14];
+		viewProjectionMatrix[14] = viewMatrixT[10] * projectionMatrixT[14];
+		viewProjectionMatrix[15] = viewMatrixT[11] * projectionMatrixT[14];
 	}
-	return out;
 }
+bool WorldToScreen(const vec3 pos, vec2& screen, const int windowWidth, const int windowHeight)
+{
+	vec4 clipCoords;
+	clipCoords.x = pos.x * viewProjectionMatrix[0] + pos.y * viewProjectionMatrix[1] + pos.z * viewProjectionMatrix[2] + viewProjectionMatrix[3];
+	clipCoords.y = pos.x * viewProjectionMatrix[4] + pos.y * viewProjectionMatrix[5] + pos.z * viewProjectionMatrix[6] + viewProjectionMatrix[7];
+	clipCoords.z = pos.x * viewProjectionMatrix[8] + pos.y * viewProjectionMatrix[9] + pos.z * viewProjectionMatrix[10] + viewProjectionMatrix[11];
+	clipCoords.w = pos.x * viewProjectionMatrix[12] + pos.y * viewProjectionMatrix[13] + pos.z * viewProjectionMatrix[14] + viewProjectionMatrix[15];
 
+	if (clipCoords.w < 0.1f)
+		return false;
+
+	vec3 NDC;
+	NDC.x = clipCoords.x / clipCoords.w;
+	NDC.y = clipCoords.y / clipCoords.w;
+	NDC.z = clipCoords.z / clipCoords.w;
+
+	//screen.x = (windowWidth / 2 * NDC.x) + (NDC.x + windowWidth / 2);
+	//screen.y = -(windowHeight / 2 * NDC.y) + (NDC.y + windowHeight / 2);
+	screen.x = -(windowWidth / 2 * NDC.x) + (windowWidth / 2);
+	screen.y = -(windowHeight / 2 * NDC.y) + (windowHeight / 2);
+	return true;
+}
+std::string FormatDamageNumber(const float dmg) {
+	if (dmg >= 100) {
+		return std::format("{:.0f}", dmg);
+	}
+	else if (dmg >= 10) {
+		return std::format("{:.1f}", dmg);
+	}
+	else {
+		return std::format("{:.2f}", dmg);
+	}
+}
+void DrawDamageNumber(ImDrawList* dl, const vec2 pos, const float fontSize, const char* str) {
+	//This is not an ideal way to create font shadow
+	dl->AddText(defaultFont, fontSize, ImVec2(pos.x - 1, pos.y - 1), ImColor(0, 0, 0, 255), str);
+	dl->AddText(defaultFont, fontSize, ImVec2(pos.x - 1, pos.y + 1), ImColor(0, 0, 0, 255), str);
+	dl->AddText(defaultFont, fontSize, ImVec2(pos.x + 1, pos.y - 1), ImColor(0, 0, 0, 255), str);
+	dl->AddText(defaultFont, fontSize, ImVec2(pos.x + 1, pos.y + 1), ImColor(0, 0, 0, 255), str);
+
+	dl->AddText(defaultFont, fontSize, ImVec2(pos.x, pos.y), ImColor(255, 255, 255, 255), str);
+}
 HRESULT __fastcall Present(IDXGISwapChain *pChain, UINT SyncInterval, UINT Flags)
 {
 	if (!g_bInitialised) {
@@ -122,7 +281,7 @@ HRESULT __fastcall Present(IDXGISwapChain *pChain, UINT SyncInterval, UINT Flags
 		pChain->GetDesc(&sd);
 		ImGui::CreateContext();
 		ImGuiIO& io = ImGui::GetIO(); (void)io;
-		defaultFont = io.Fonts->AddFontFromMemoryCompressedTTF(tahomabd_data, tahomabd_size, DAMAGE_NUMBER_FONT_SIZE);
+		defaultFont = io.Fonts->AddFontFromMemoryCompressedTTF(tahomabd_data, tahomabd_size, 100.0f);
 
 
 		window = sd.OutputWindow;
@@ -145,41 +304,42 @@ HRESULT __fastcall Present(IDXGISwapChain *pChain, UINT SyncInterval, UINT Flags
 	}
 	gameTime++;
 	playerAddress = GetPointerAddress(baseAddress, { 0x0125AB68,0x238,0x290,0x10 });
-	if (damage_tmp != 0) {
-		if (damageNumbers.size() > 0) {
-			Damage* lastDamage = damageNumbers.back();
-			if (gameTime - lastDamage->time > DAMAGE_CHANGE_TIME) {
-				Damage* d = new Damage();
-				d->value = -damage_tmp;
-				d->time = gameTime;
-				damageNumbers.push_back(d);
-			}
-			else {
-				lastDamage->value -= damage_tmp;
-				lastDamage->time = gameTime;
-			}
-		}
-		else {
-			Damage* d = new Damage();
-			d->value = -damage_tmp;
-			d->time = gameTime;
-			damageNumbers.push_back(d);
-		}
-		damage_tmp = 0;
-	}
-	if (!damageNumbers.empty()) {
-		std::list<Damage*>::iterator it = damageNumbers.begin();
-		while (it != damageNumbers.end()) {
+
+	if (!damageNumbersFixed.empty()) {
+		std::list<Damage*>::iterator it = damageNumbersFixed.begin();
+		while (it != damageNumbersFixed.end()) {
 			Damage* d = *it;
 			it++;
-			if (gameTime - d->time > DAMAGE_DISPLAY_TIME) {
-				damageNumbers.pop_front();
+			if (gameTime - d->time > FIXED_POSITION_DISPLAY_TIME) {
+				damageNumbersFixed.pop_front();
 				delete d;
 			}
 		}
-		
 	}
-
+	if (!damageNumbersByHit.empty()) {
+		std::list<Damage*>::iterator it = damageNumbersByHit.begin();
+		while (it != damageNumbersByHit.end()) {
+			Damage* d = *it;
+			it++;
+			if (gameTime - d->time > WORLD_POSITION_DISPLAY_TIME) {
+				damageNumbersByHit.pop_front();
+				delete d;
+			}
+		}
+	}
+	if (!damageNumbersByTarget.empty()) {
+		for (std::map<uintptr_t, Damage*>::iterator it = damageNumbersByTarget.begin(); it != damageNumbersByTarget.end();) {
+			uintptr_t target = it->first;
+			Damage* d = it->second;
+			if (gameTime - d->time > WORLD_POSITION_DISPLAY_TIME) {
+				damageNumbersByTarget.erase(it++);
+				delete d;
+			}
+			else {
+				++it;
+			}
+		}
+	}
 	ImGui_ImplWin32_NewFrame();
 	ImGui_ImplDX11_NewFrame();
 
@@ -192,51 +352,71 @@ HRESULT __fastcall Present(IDXGISwapChain *pChain, UINT SyncInterval, UINT Flags
 	ImGui::Begin("EDF hook", NULL, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs);
 	ImGui::PushFont(defaultFont);
 	ImDrawList* dl = ImGui::GetWindowDrawList();
-	int num = damageNumbers.size();
-	if(num > 0 && playerAddress != 0){
-		bool isInVehicle = (*(uintptr_t*)(playerAddress + 0x1168)) != 0;
 
-		for (std::list<Damage*>::iterator it = damageNumbers.begin(); it != damageNumbers.end(); it++) {
-			Damage* d = *it;
-			std::string displayText;
-			if (d->value >= 100) {
-				displayText = std::format("{:.0f}", d->value);
-			}
-			else if (d->value >= 10) {
-				displayText = std::format("{:.1f}", d->value);
-			}
-			else {
-				displayText = std::format("{:.2f}", d->value);
-			}
+	vec2 pos;
+	pos.x = 500;
+	pos.y = 500;
+	if (playerAddress != 0) {
+		if (FIXED_POSITION_DISPLAY != 0 && damageNumbersFixed.size() > 0) {
+			bool isInVehicle = (*(uintptr_t*)(playerAddress + 0x1168)) != 0;
+			int num = damageNumbersFixed.size();
+			for (std::list<Damage*>::iterator it = damageNumbersFixed.begin(); it != damageNumbersFixed.end(); it++) {
+				Damage* d = *it;
+				std::string displayText = FormatDamageNumber(d->value);
+				float text_width = ImGui::CalcTextSize(displayText.c_str()).x*0.01f;
+				float fontSize;
+				vec2 pos;
+				float fontScale = 0;
+				if (gameTime - d->time < 20) {
+					fontScale = 0.8f * (20 - (gameTime - d->time)) / 20.0f;
+				}
+				if (isInVehicle) {
+					fontSize = (1.0f + fontScale) * FIXED_POSITION_VEHICLE_FONT_SIZE * windowScale;
+					pos.x = (FIXED_POSITION_VEHICLE_POS_X - text_width * FIXED_POSITION_VEHICLE_FONT_SIZE * (fontScale * 0.1f)) * windowScale;
+					pos.y = (FIXED_POSITION_VEHICLE_POS_Y - num * 1.04f * FIXED_POSITION_VEHICLE_FONT_SIZE * (1.0f + fontScale * 0.9f)) * windowScale + (winHeight - winWidth * 9.0f / 16) / 2;
+				}
+				else {
+					fontSize = (1.0f + fontScale) * FIXED_POSITION_FONT_SIZE * windowScale;
+					pos.x = (FIXED_POSITION_POS_X - text_width * FIXED_POSITION_FONT_SIZE * (1.0f + fontScale * 0.9f)) * windowScale;
+					pos.y = (FIXED_POSITION_POS_Y - num * 1.04f * FIXED_POSITION_FONT_SIZE * (1.0f + fontScale * 0.9f)) * windowScale + (winHeight - winWidth * 9.0f / 16) / 2;
+				}
+				DrawDamageNumber(dl, pos, fontSize, displayText.c_str());
 
-			float text_width = ImGui::CalcTextSize(displayText.c_str()).x;
-			float fontScale = 0;
-			if (gameTime - d->time < 20) {
-				fontScale = 0.8f * (20 - (gameTime - d->time)) / 20.0f;
+				num--;
 			}
-			float fontScale2 = (isInVehicle?1.3f:1.0f);
-			float fontSize = (1.0f + fontScale) * fontScale2 * DAMAGE_NUMBER_FONT_SIZE * windowScale;
-			float posX;
-			float posY;
-			if (isInVehicle) {
-				posX = (DAMAGE_NUMBER_VEHICLE_POS_X - text_width * fontScale2 * (fontScale * 0.1f)) * windowScale;
-				posY = (DAMAGE_NUMBER_VEHICLE_POS_Y - num * 1.04f * DAMAGE_NUMBER_FONT_SIZE * fontScale2 * (1.0f + fontScale * 0.9f)) * windowScale + (winHeight - winWidth * 9.0f / 16) / 2;
+		}
+		if (WORLD_POSITION_DISPLAY != 0 && damageNumbersByTarget.size() + damageNumbersByHit.size() > 0) {
+			viewMatrixT = (float*)(GetPointerAddress(baseAddress, { 0x0125B080,0x8,0x8,0x8 }) + 0x80);
+			projectionMatrixT = (float*)(GetPointerAddress(baseAddress, { 0x0125B080,0x8,0x8,0x8 }) + 0xE0);
+			GetViewProjectionMatrix();
+			for (std::list<Damage*>::iterator it = damageNumbersByHit.begin(); it != damageNumbersByHit.end(); it++) {
+				Damage* d = *it;
+				std::string displayText = FormatDamageNumber(d->value);
+
+				float text_width = ImGui::CalcTextSize(displayText.c_str()).x * 0.01f;
+				float fontSize = WORLD_POSITION_FONT_SIZE * windowScale;
+				vec2 pos;
+				if (!WorldToScreen(d->pos, pos, winWidth, winHeight)) {
+					continue;
+				}
+				pos.x -= text_width * WORLD_POSITION_FONT_SIZE / 4;
+				pos.y -= fontSize / 2;
+				DrawDamageNumber(dl, pos, fontSize, displayText.c_str());
 			}
-			else {
-				posX = (DAMAGE_NUMBER_POS_X - text_width * fontScale2 * (1.0f + fontScale * 0.9f)) * windowScale;
-				posY = (DAMAGE_NUMBER_POS_Y - num * 1.04f * DAMAGE_NUMBER_FONT_SIZE * fontScale2 * (1.0f + fontScale * 0.9f)) * windowScale + (winHeight - winWidth * 9.0f / 16) / 2;
+			for (std::map<uintptr_t, Damage*>::iterator it = damageNumbersByTarget.begin(); it != damageNumbersByTarget.end(); it++) {
+				Damage* d = it->second;
+				std::string displayText = FormatDamageNumber(d->value);
+
+				float text_width = ImGui::CalcTextSize(displayText.c_str()).x*0.01f;
+				float fontSize = WORLD_POSITION_FONT_SIZE * windowScale;
+				vec2 pos;
+				if (!WorldToScreen(d->pos, pos, winWidth, winHeight)) {
+					continue;
+				}
+				pos.x -= text_width * WORLD_POSITION_FONT_SIZE / 2 * windowScale;
+				pos.y -= fontSize * 2.0f;
+				DrawDamageNumber(dl, pos, fontSize, displayText.c_str());
 			}
-			
-
-			//This is not an ideal way to create font shadow
-			dl->AddText(defaultFont, fontSize, ImVec2(posX - 1, posY - 1), ImColor(0, 0, 0, 255), displayText.c_str());
-			dl->AddText(defaultFont, fontSize, ImVec2(posX - 1, posY + 1), ImColor(0, 0, 0, 255), displayText.c_str());
-			dl->AddText(defaultFont, fontSize, ImVec2(posX + 1, posY - 1), ImColor(0, 0, 0, 255), displayText.c_str());
-			dl->AddText(defaultFont, fontSize, ImVec2(posX + 1, posY + 1), ImColor(0, 0, 0, 255), displayText.c_str());
-
-
-			dl->AddText(defaultFont, fontSize, ImVec2(posX, posY), ImColor(255, 255, 255, 255), displayText.c_str());
-			num--;
 		}
 	}
 	ImGui::PopFont();	
@@ -253,8 +433,11 @@ HRESULT __fastcall Present(IDXGISwapChain *pChain, UINT SyncInterval, UINT Flags
 
 void detourDirectX()
 {
-	Sleep(10000);
 	void** pVMT = (void**)GetPointerAddress(baseAddress, { 0x1256c98, 0x0 });
+	while (pVMT == 0) {
+		Sleep(1000);
+		pVMT = (void**)GetPointerAddress(baseAddress, { 0x1256c98, 0x0 });
+	}
 	fnIDXGISwapChainPresent = (IDXGISwapChainPresent)(pVMT[VMT_PRESENT]);
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
@@ -376,6 +559,54 @@ void hookDamagefunction() {
 int WINAPI main()
 {
 	baseAddress = (uintptr_t)GetModuleHandle(L"EDF5.exe");
+	mINI::INIFile file("EDF5-Damage-Number-Display.ini");
+	mINI::INIStructure ini;
+	if (file.read(ini)) {
+		if (ini.has("FIXED_POSITION_DISPLAY")) {
+			if (ini["FIXED_POSITION_DISPLAY"].has("Enabled")) {
+				FIXED_POSITION_DISPLAY = ini["FIXED_POSITION_DISPLAY"]["Enabled"] == "1";
+			}
+			if (ini["FIXED_POSITION_DISPLAY"].has("Display_Time")) {
+				FIXED_POSITION_DISPLAY_TIME = stoi(ini["FIXED_POSITION_DISPLAY"]["Display_Time"]);
+			}
+			if (ini["FIXED_POSITION_DISPLAY"].has("Change_Time")) {
+				FIXED_POSITION_CHANGE_TIME = stoi(ini["FIXED_POSITION_DISPLAY"]["Change_Time"]);
+			}
+			if (ini["FIXED_POSITION_DISPLAY"].has("Font_Size")) {
+				FIXED_POSITION_FONT_SIZE = stof(ini["FIXED_POSITION_DISPLAY"]["Font_Size"]);
+			}
+			if (ini["FIXED_POSITION_DISPLAY"].has("Pos_X")) {
+				FIXED_POSITION_POS_X = stof(ini["FIXED_POSITION_DISPLAY"]["Pos_X"]);
+			}
+			if (ini["FIXED_POSITION_DISPLAY"].has("Pos_Y")) {
+				FIXED_POSITION_POS_Y = stof(ini["FIXED_POSITION_DISPLAY"]["Pos_Y"]);
+			}
+			if (ini["FIXED_POSITION_DISPLAY"].has("Vehicle_Font_Size")) {
+				FIXED_POSITION_VEHICLE_FONT_SIZE = stof(ini["FIXED_POSITION_DISPLAY"]["Vehicle_Font_Size"]);
+			}
+			if (ini["FIXED_POSITION_DISPLAY"].has("Vehicle_Pos_X")) {
+				FIXED_POSITION_VEHICLE_POS_X = stof(ini["FIXED_POSITION_DISPLAY"]["Vehicle_Pos_X"]);
+			}
+			if (ini["FIXED_POSITION_DISPLAY"].has("Vehicle_Pos_Y")) {
+				FIXED_POSITION_VEHICLE_POS_Y = stof(ini["FIXED_POSITION_DISPLAY"]["Vehicle_Pos_Y"]);
+			}
+		}
+		if (ini.has("WORLD_POSITION_DISPLAY")) {
+			if (ini["WORLD_POSITION_DISPLAY"].has("Enabled")) {
+				WORLD_POSITION_DISPLAY = ini["WORLD_POSITION_DISPLAY"]["Enabled"] == "1";
+			}
+			if (ini["WORLD_POSITION_DISPLAY"].has("Mode")) {
+				WORLD_POSITION_DISPLAY_MODE = stoi(ini["WORLD_POSITION_DISPLAY"]["Mode"]);
+			}
+			if (ini["FIXED_POSITION_DISPLAY"].has("Display_Time")) {
+				WORLD_POSITION_DISPLAY_TIME = stoi(ini["WORLD_POSITION_DISPLAY"]["Display_Time"]);
+			}
+			if (ini["FIXED_POSITION_DISPLAY"].has("Font_Size")) {
+				WORLD_POSITION_FONT_SIZE = stof(ini["WORLD_POSITION_DISPLAY"]["Font_Size"]);
+			}
+
+		}
+	}
 	detourDirectX();
 	hookDamagefunction();
 }

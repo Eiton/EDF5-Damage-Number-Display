@@ -78,7 +78,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>$(SolutionDir)Detours\include;$(SolutionDir);$(SolutionDir)imgui;$(SolutionDir)imgui\backends</IncludePath>
+    <IncludePath>$(SolutionDir)Detours\include;$(SolutionDir);$(SolutionDir)imgui;$(SolutionDir)imgui\backends;$(SolutionDir)mINI\src\mini</IncludePath>
     <LibraryPath>$(SolutionDir)Detours\lib.X64;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -87,7 +87,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(SolutionDir)Detours\include;$(SolutionDir);$(SolutionDir)imgui;$(SolutionDir)imgui\backends</IncludePath>
+    <IncludePath>$(SolutionDir)Detours\include;$(SolutionDir);$(SolutionDir)imgui;$(SolutionDir)imgui\backends;$(SolutionDir)mINI\src\mini</IncludePath>
     <LibraryPath>$(SolutionDir)Detours\lib.X64;$(LibraryPath)</LibraryPath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
