@@ -97,6 +97,8 @@ struct Damage {
 	vec3 pos;
 	float value;
 	int time;
+	int type;
+	float life;
 };
 
 int gameTime = 0;
@@ -158,9 +160,10 @@ extern "C" {
 			d->pos.x = *(float*)(ptr + 0x30);
 			d->pos.y = *(float*)(ptr + 0x34);
 			d->pos.z = *(float*)(ptr + 0x38);
+			d->type = *(BYTE*)(target + 0x218);
 			damageNumbersByHit.push_back(d);
 		}
-		else if (WORLD_POSITION_DISPLAY != 0 && WORLD_POSITION_DISPLAY_MODE == 2){
+		else if (WORLD_POSITION_DISPLAY != 0 && WORLD_POSITION_DISPLAY_MODE >= 2){
 			// Try to get the lock on position. 
 			uintptr_t pos = GetPointerAddress(target, { 0x268,0x8 });
 			// Some objects do not have lock on position, so use the object position instead
@@ -174,6 +177,10 @@ extern "C" {
 				d->pos.x = *(float*)(pos + 0x10);
 				d->pos.y = *(float*)(pos + 0x14);
 				d->pos.z = *(float*)(pos + 0x18);
+				d->life = *(float*)(target + 0x1fc) + dmg;
+				if (d->life < 0) {
+					d->life = 0;
+				}
 			}
 			else {
 				Damage* d = new Damage();
@@ -182,6 +189,11 @@ extern "C" {
 				d->pos.x = *(float*)(pos + 0x10);
 				d->pos.y = *(float*)(pos + 0x14);
 				d->pos.z = *(float*)(pos + 0x18);
+				d->type = *(BYTE*)(target + 0x218);
+				d->life = *(float*)(target + 0x1fc) + dmg;
+				if (d->life < 0) {
+					d->life = 0;
+				}
 				damageNumbersByTarget.insert(std::pair{ target,d });
 			}
 		}
@@ -262,14 +274,14 @@ std::string FormatDamageNumber(const float dmg) {
 		return std::format("{:.2f}", dmg);
 	}
 }
-void DrawDamageNumber(ImDrawList* dl, const vec2 pos, const float fontSize, const char* str) {
+void DrawDamageNumber(ImDrawList* dl, const vec2 pos, const float fontSize, const char* str, const vec3 color) {
 	//This is not an ideal way to create font shadow
 	dl->AddText(defaultFont, fontSize, ImVec2(pos.x - 1, pos.y - 1), ImColor(0, 0, 0, 255), str);
 	dl->AddText(defaultFont, fontSize, ImVec2(pos.x - 1, pos.y + 1), ImColor(0, 0, 0, 255), str);
 	dl->AddText(defaultFont, fontSize, ImVec2(pos.x + 1, pos.y - 1), ImColor(0, 0, 0, 255), str);
 	dl->AddText(defaultFont, fontSize, ImVec2(pos.x + 1, pos.y + 1), ImColor(0, 0, 0, 255), str);
 
-	dl->AddText(defaultFont, fontSize, ImVec2(pos.x, pos.y), ImColor(255, 255, 255, 255), str);
+	dl->AddText(defaultFont, fontSize, ImVec2(pos.x, pos.y), ImColor(int(color.x), int(color.y), int(color.z), 255), str);
 }
 HRESULT __fastcall Present(IDXGISwapChain *pChain, UINT SyncInterval, UINT Flags)
 {
@@ -380,7 +392,7 @@ HRESULT __fastcall Present(IDXGISwapChain *pChain, UINT SyncInterval, UINT Flags
 					pos.x = (FIXED_POSITION_POS_X - text_width * FIXED_POSITION_FONT_SIZE * (1.0f + fontScale * 0.9f)) * windowScale;
 					pos.y = (FIXED_POSITION_POS_Y - num * 1.04f * FIXED_POSITION_FONT_SIZE * (1.0f + fontScale * 0.9f)) * windowScale + (winHeight - winWidth * 9.0f / 16) / 2;
 				}
-				DrawDamageNumber(dl, pos, fontSize, displayText.c_str());
+				DrawDamageNumber(dl, pos, fontSize, displayText.c_str(),vec3(255.0,255.0,255.0));
 
 				num--;
 			}
@@ -401,11 +413,11 @@ HRESULT __fastcall Present(IDXGISwapChain *pChain, UINT SyncInterval, UINT Flags
 				}
 				pos.x -= text_width * WORLD_POSITION_FONT_SIZE / 4;
 				pos.y -= fontSize / 2;
-				DrawDamageNumber(dl, pos, fontSize, displayText.c_str());
+				DrawDamageNumber(dl, pos, fontSize, displayText.c_str(), d->type!=1? vec3(255.0, 0, 0): vec3(255.0, 255.0, 255.0));
 			}
 			for (std::map<uintptr_t, Damage*>::iterator it = damageNumbersByTarget.begin(); it != damageNumbersByTarget.end(); it++) {
 				Damage* d = it->second;
-				std::string displayText = FormatDamageNumber(d->value);
+				std::string displayText = FormatDamageNumber(WORLD_POSITION_DISPLAY_MODE==2?d->value:d->life);
 
 				float text_width = ImGui::CalcTextSize(displayText.c_str()).x*0.01f;
 				float fontSize = WORLD_POSITION_FONT_SIZE * windowScale;
@@ -415,11 +427,11 @@ HRESULT __fastcall Present(IDXGISwapChain *pChain, UINT SyncInterval, UINT Flags
 				}
 				pos.x -= text_width * WORLD_POSITION_FONT_SIZE / 2 * windowScale;
 				pos.y -= fontSize * 2.0f;
-				DrawDamageNumber(dl, pos, fontSize, displayText.c_str());
+				DrawDamageNumber(dl, pos, fontSize, displayText.c_str(), d->type != 1 ? vec3(255.0, 0, 0) : vec3(255.0, 255.0, 255.0));
 			}
 		}
 	}
-	ImGui::PopFont();	
+	ImGui::PopFont();
 	ImGui::End();
 	ImGui::EndFrame();
 	ImGui::Render();
