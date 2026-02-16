@@ -16,5 +16,4 @@ Clone this repo. Build the x64 detour library. Open the project wilth Visual Stu
 ## Known issues ##
 1. Not work in split screen play. 
 2. Damage by vehicle is displayed only when the player is inside it. (This is probabily impossible to fix)
-3. Freezing when you change the resolution with the dll loaded.
-4. Rare crashes. If you find reproducible crashes, please create an issue and include the details.
+3. Rare crashes. If you find reproducible crashes, please create an issue and include the details.

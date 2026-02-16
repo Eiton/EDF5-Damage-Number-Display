@@ -43,10 +43,13 @@
 
 
 #define VMT_PRESENT (UINT)IDXGISwapChainVMT::Present
+#define VMT_RESIZE_BUFFERS (UINT)IDXGISwapChainVMT::ResizeBuffers
 
 
 // D3X HOOK DEFINITIONS
 typedef HRESULT(__fastcall *IDXGISwapChainPresent)(IDXGISwapChain *pSwapChain, UINT SyncInterval, UINT Flags);
+
+typedef HRESULT(__fastcall* IDXGISwapChainResizeBuffers)(IDXGISwapChain* pChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT  DXGI_FORMAT, UINT SwapChainFlags);
 BOOL g_bInitialised = false;
 // Main D3D11 Objects
 ID3D11DeviceContext *pContext = NULL;
@@ -56,6 +59,7 @@ static IDXGISwapChain*  pSwapChain = NULL;
 static WNDPROC OriginalWndProcHandler = nullptr;
 HWND window = nullptr;
 IDXGISwapChainPresent fnIDXGISwapChainPresent;
+IDXGISwapChainResizeBuffers fnIDXGISwapChainResizeBuffers;
 
 
 int FIXED_POSITION_DISPLAY = 1;
@@ -283,6 +287,43 @@ void DrawDamageNumber(ImDrawList* dl, const vec2 pos, const float fontSize, cons
 
 	dl->AddText(defaultFont, fontSize, ImVec2(pos.x, pos.y), ImColor(int(color.x), int(color.y), int(color.z), 255), str);
 }
+HRESULT __fastcall ResizeBuffers(IDXGISwapChain* pChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT  NewFormat, UINT SwapChainFlags)
+{
+	if (mainRenderTargetView)
+	{
+		pContext->OMSetRenderTargets(0, 0, 0);
+		mainRenderTargetView->Release();
+	}
+
+	HRESULT resizeBuffers = fnIDXGISwapChainResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+
+	ID3D11Texture2D* pBuffer;
+	HRESULT pSwapChainBuffer = pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pBuffer);
+
+	HRESULT pDeviceRenderTarget = pDevice->CreateRenderTargetView(pBuffer, NULL, &mainRenderTargetView);
+
+	// Release buffer
+	pBuffer->Release();
+
+	// Set Rendertarget
+	pContext->OMSetRenderTargets(1, &mainRenderTargetView, NULL);
+
+	// Set up the viewport.
+	D3D11_VIEWPORT vp;
+	vp.Width = Width;
+	vp.Height = Height;
+	vp.MinDepth = 0.0f;
+	vp.MaxDepth = 1.0f;
+	vp.TopLeftX = 0;
+	vp.TopLeftY = 0;
+	pContext->RSSetViewports(1, &vp);
+	winWidth = Width;
+	winHeight = Height;
+	windowScale = winWidth / 1920.0f;
+
+	// Return resizeBuffers
+	return resizeBuffers;
+}
 HRESULT __fastcall Present(IDXGISwapChain *pChain, UINT SyncInterval, UINT Flags)
 {
 	if (!g_bInitialised) {
@@ -451,9 +492,14 @@ void detourDirectX()
 		pVMT = (void**)GetPointerAddress(baseAddress, { 0x1256c98, 0x0 });
 	}
 	fnIDXGISwapChainPresent = (IDXGISwapChainPresent)(pVMT[VMT_PRESENT]);
+	fnIDXGISwapChainResizeBuffers = (IDXGISwapChainResizeBuffers)(pVMT[VMT_RESIZE_BUFFERS]);
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
-	DetourAttach(&(LPVOID&)fnIDXGISwapChainPresent, (PBYTE)Present); 
+	DetourAttach(&(LPVOID&)fnIDXGISwapChainPresent, (PBYTE)Present);
+	DetourTransactionCommit();
+	DetourTransactionBegin();
+	DetourUpdateThread(GetCurrentThread());
+	DetourAttach(&(LPVOID&)fnIDXGISwapChainResizeBuffers, (PBYTE)ResizeBuffers);
 	DetourTransactionCommit();
 }
 
